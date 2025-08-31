@@ -398,7 +398,7 @@ int main() {
     hyperparams.similarity_weight = 1.0f;
     hyperparams.no_key_weight = 1.0f;
     
-    const int num_payloads = 1000;  // Generate more for better comparison
+    const int num_payloads = 100;  // Generate more for better comparison
     const int threads_per_block = 256;
     const int blocks = (num_payloads + threads_per_block - 1) / threads_per_block;
     
