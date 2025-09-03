@@ -74,7 +74,7 @@ python3 -m pytest unit_tests/[test_file].py
 ## Souce Code Brunmayr et al. paper
 
 - **motiif-generation-tool** : https://github.com/ssb5018/motif-generation-tool
-- **motiif-generation-tool** : https://github.com/ssb5018/dna-validation
+- **validation-tool** : https://github.com/ssb5018/dna-validation
 
 ## Parameters
 Based on Brunmayr et al. paper with hyperparameter tuning:
