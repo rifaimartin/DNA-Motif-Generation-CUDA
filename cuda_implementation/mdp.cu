@@ -6,644 +6,567 @@
 #include <cmath>
 #include <ctime>
 #include <fstream>
-#include <iomanip>
 #include <set>
+#include <cfloat>
+#include <algorithm>
+#include <cstdio>
 
-// Exact parameters from Brunmayr et al. paper
+#ifndef INFINITY
+#define INFINITY HUGE_VALF
+#endif
+
+// Macro untuk penanganan kesalahan CUDA
+#define CUDA_CHECK(err) do { \
+    if (err != cudaSuccess) { \
+        printf("CUDA Error: %s at %s:%d\n", cudaGetErrorString(err), __FILE__, __LINE__); \
+        exit(1); \
+    } \
+} while (0)
+
+// ======================= Models / Params =======================
 struct Constraints {
     int payload_size;    // 60
-    int payload_num;     // 15  
+    int payload_num;     // 15
     int key_size;        // 20
     int key_num;         // 8
     float min_gc;        // 25.0
-    float max_gc;        // 65.0 
+    float max_gc;        // 65.0
     int max_hom;         // 5
     int max_hairpin;     // 1
     int loop_size_min;   // 6
     int loop_size_max;   // 7
 };
 
-// Hyperparameters from Python tuning results
 struct Hyperparameters {
-    float hom_shape;              // 70
-    float gc_shape;               // 10
-    float hairpin_shape;          // 8
-    float similarity_shape;       // 60
+    float hom_shape;               // 70
+    float gc_shape;                // 10
+    float hairpin_shape;           // 8
+    float similarity_shape;        // 60
     float no_key_in_payload_shape; // 45
-    
-    float hom_weight;             // 1
-    float gc_weight;              // 1
-    float hairpin_weight;         // 1
-    float similarity_weight;      // 1
-    float no_key_weight;          // 1
+    float hom_weight;              // 1
+    float gc_weight;               // 1
+    float hairpin_weight;          // 1
+    float similarity_weight;       // 1
+    float no_key_weight;           // 1
 };
 
-__constant__ int nucleotide_complement[4] = {1, 0, 3, 2};
+__constant__ int nucleotide_complement[4] = {1, 0, 3, 2}; // A<->T, C<->G
 
-// Homopolymer reward following paper formula: -(hhom)^(homLen/maxHom) + 1
-__device__ float calculate_homopolymer_reward(
-    const unsigned char* sequence,
-    int length, 
-    int new_nucleotide,
-    const Constraints* constraints,
-    const Hyperparameters* hyperparams
-) {
-    if (length == 0) return 0.0f;
-    
-    // Calculate homopolymer length including new nucleotide
-    int hom_len = 1;
-    if (length > 0 && sequence[length - 1] == new_nucleotide) {
-        hom_len = 2;
-        for (int i = length - 2; i >= 0; i--) {
-            if (sequence[i] == new_nucleotide) {
-                hom_len++;
+// ======================= Device Helpers =======================
+
+__device__ inline bool is_gc(unsigned char b) { return (b == 2 /*C*/ || b == 3 /*G*/); }
+
+__device__ bool would_match_any_key_suffix(
+    const unsigned char* seq, int len, unsigned char candidate,
+    const unsigned char* keys, int key_num, int key_size)
+{
+    int new_len = len + 1;
+    if (new_len < key_size) return false;
+
+    int start = new_len - key_size;
+    for (int k = 0; k < key_num; ++k) {
+        bool match = true;
+        for (int j = 0; j < key_size - 1; ++j) {
+            if (seq[start + j] != keys[k * key_size + j]) { match = false; break; }
+        }
+        if (match && candidate == keys[k * key_size + (key_size - 1)]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+__device__ bool would_form_hairpin_after_append(
+    const unsigned char* seq, int len, unsigned char candidate, const Constraints* c)
+{
+    int last = len;
+    if (last < c->loop_size_min) return false;
+
+    for (int loop = c->loop_size_min; loop <= c->loop_size_max; ++loop) {
+        int stem_len = 0;
+        while (true) {
+            int left = last - loop - 1 - stem_len;
+            if (left < 0) break;
+
+            unsigned char rb = (stem_len == 0) ? candidate : seq[len - stem_len];
+            unsigned char lb = seq[left];
+
+            if (lb == nucleotide_complement[rb]) {
+                ++stem_len;
+                if (stem_len > c->max_hairpin) return true;
             } else {
                 break;
             }
         }
     }
-    
-    if (hom_len <= constraints->max_hom) {
-        return 0.0f; // No penalty
-    }
-    
-    // Paper formula: -(hhom)^(homLen/maxHom) + 1
-    float ratio = (float)hom_len / constraints->max_hom;
-    float penalty = -powf(hyperparams->hom_shape, ratio) + 1.0f;
-    
-    return penalty * hyperparams->hom_weight;
+    return false;
 }
 
-// GC content reward with progress weighting
-__device__ float calculate_gc_reward(
-    const unsigned char* sequence, 
-    int length, 
-    int new_nucleotide,
-    const Constraints* constraints,
-    const Hyperparameters* hyperparams
-) {
-    if (length == 0) return 0.0f;
-    
-    int gc_count = 0;
-    for (int i = 0; i < length; i++) {
-        if (sequence[i] == 2 || sequence[i] == 3) gc_count++;
-    }
-    if (new_nucleotide == 2 || new_nucleotide == 3) gc_count++;
-    
-    float current_gc = (float)gc_count / (length + 1) * 100.0f;
-    
-    // Weight based on sequence progress - paper formula
-    float progress_ratio = (float)(length + 1) / constraints->payload_size;
-    float weight = powf(hyperparams->gc_shape, progress_ratio) - 1.0f;
-    
-    float log_score = 0.0f;
-    
-    // Check violations as in original paper
-    if (current_gc < constraints->min_gc) {
-        log_score = fmaxf(log_score, weight * (constraints->min_gc - current_gc));
-    }
-    if (current_gc > constraints->max_gc) {
-        log_score = fmaxf(log_score, weight * (current_gc - constraints->max_gc));
-    }
-    
-    return -log_score * hyperparams->gc_weight; // Return negative for penalty
-}
-
-// Basic hairpin detection
-__device__ float calculate_hairpin_reward(
+// ======================= Scoring =======================
+__device__ void calculate_log_scores(
     const unsigned char* sequence,
     int length,
-    int new_nucleotide,
+    float* log_scores,
     const Constraints* constraints,
-    const Hyperparameters* hyperparams
-) {
-    int total_length = length + 1;
-    if (total_length < constraints->loop_size_min + 2 * constraints->max_hairpin) {
-        return 0.0f; // Too short for hairpins
-    }
-    
-    // Simplified hairpin detection
-    float penalty = 0.0f;
-    
-    // Check for potential hairpin formations
-    for (int i = 0; i <= total_length - 2 * constraints->max_hairpin - constraints->loop_size_min; i++) {
-        for (int loop_size = constraints->loop_size_min; 
-             loop_size <= constraints->loop_size_max && 
-             i + 2 * constraints->max_hairpin + loop_size <= total_length; 
-             loop_size++) {
-            
-            bool is_hairpin = true;
-            
-            // Check stem complementarity
-            for (int j = 0; j < constraints->max_hairpin; j++) {
-                unsigned char left_base = (i + j < length) ? sequence[i + j] : new_nucleotide;
-                int right_pos = i + constraints->max_hairpin + loop_size + constraints->max_hairpin - 1 - j;
-                unsigned char right_base = (right_pos < length) ? sequence[right_pos] : new_nucleotide;
-                
-                if (nucleotide_complement[left_base] != right_base) {
-                    is_hairpin = false;
-                    break;
-                }
-            }
-            
-            if (is_hairpin) {
-                // Paper formula for hairpin penalty
-                float stem_ratio = (float)constraints->max_hairpin / constraints->max_hairpin;
-                penalty = -powf(hyperparams->hairpin_shape, stem_ratio) + 1.0f;
-                break;
+    const Hyperparameters* hyperparams,
+    bool* failed,
+    const unsigned char* keys,
+    int key_num,
+    int key_size,
+    bool check_no_key_in_payload)
+{
+    *failed = false;
+
+    for (int nuc = 0; nuc < 4; ++nuc) {
+        float ls = 0.0f;
+
+        // Homopolymer
+        int hom_len = 1;
+        if (length > 0 && sequence[length - 1] == nuc) {
+            hom_len = 2;
+            for (int i = length - 2; i >= 0; --i) {
+                if (sequence[i] == nuc) ++hom_len;
+                else break;
             }
         }
-        if (penalty < 0.0f) break;
+        if (hom_len > constraints->max_hom) {
+            log_scores[nuc] = -INFINITY; continue;
+        }
+        if (hom_len > constraints->max_hom - 1) {
+            float penalty = -powf(hyperparams->hom_shape, (float)hom_len / constraints->max_hom);
+            ls += hyperparams->hom_weight * penalty;
+        }
+
+        // GC Content
+        int gc_count = 0;
+        for (int i = 0; i < length; ++i) if (is_gc(sequence[i])) ++gc_count;
+        if (is_gc(nuc)) ++gc_count;
+        float current_gc = (float)gc_count / (float)(length + 1) * 100.0f;
+
+        if (length + 1 >= max(8, constraints->key_size / 2)) {
+            if (current_gc < constraints->min_gc || current_gc > constraints->max_gc) {
+                log_scores[nuc] = -INFINITY; continue;
+            }
+        } else {
+            if (current_gc < constraints->min_gc) {
+                float penalty = hyperparams->gc_weight * (constraints->min_gc - current_gc);
+                ls -= penalty * 0.1f;
+            } else if (current_gc > constraints->max_gc) {
+                float penalty = hyperparams->gc_weight * (current_gc - constraints->max_gc);
+                ls -= penalty * 0.1f;
+            }
+        }
+
+        // Hairpin
+        if (would_form_hairpin_after_append(sequence, length, (unsigned char)nuc, constraints)) {
+            log_scores[nuc] = -INFINITY; continue;
+        }
+
+        // noKeyInPayload
+        if (check_no_key_in_payload && keys != nullptr) {
+            if (would_match_any_key_suffix(sequence, length, (unsigned char)nuc,
+                                           keys, key_num, key_size)) {
+                log_scores[nuc] = -INFINITY; continue;
+            }
+        }
+
+        // Similarity penalty
+        if (length > 0 && sequence[length - 1] == nuc) {
+            ls -= 0.05f * hyperparams->similarity_weight * hyperparams->similarity_shape;
+        }
+
+        log_scores[nuc] = ls;
     }
-    
-    return penalty * hyperparams->hairpin_weight;
+
+    bool all_failed = true;
+    for (int i = 0; i < 4; ++i) if (log_scores[i] > -INFINITY) { all_failed = false; break; }
+    *failed = all_failed;
 }
 
-__device__ void calculate_rewards(
-    const unsigned char* sequence,
-    int length,
-    float* rewards,
+__device__ bool softmax(float* log_scores, float* probabilities) {
+    bool has_valid = false;
+    for (int i = 0; i < 4; ++i) if (log_scores[i] > -INFINITY) { has_valid = true; break; }
+    if (!has_valid) return false;
+
+    float m = -INFINITY;
+    for (int i = 0; i < 4; ++i) if (log_scores[i] > m) m = log_scores[i];
+
+    float sum = 0.f;
+    for (int i = 0; i < 4; ++i) {
+        if (log_scores[i] > -INFINITY) {
+            probabilities[i] = expf(log_scores[i] - m);
+            sum += probabilities[i];
+        } else probabilities[i] = 0.f;
+    }
+    if (sum <= 0.f) return false;
+    for (int i = 0; i < 4; ++i) probabilities[i] /= sum;
+    return true;
+}
+
+__device__ int sample_nucleotide(float* p, curandState* state) {
+    float r = curand_uniform(state);
+    float acc = 0.f;
+    for (int i = 0; i < 4; ++i) {
+        acc += p[i];
+        if (r <= acc) return i;
+    }
+    return 3;
+}
+
+// ======================= Kernels =======================
+
+__global__ void key_generation_kernel(
+    unsigned char* keys,
+    curandState* states,
     const Constraints* constraints,
-    const Hyperparameters* hyperparams
-) {
-    for (int nuc = 0; nuc < 4; nuc++) {
-        float total_reward = 0.0f;
-        
-        // Calculate all constraint rewards
-        total_reward += calculate_gc_reward(sequence, length, nuc, constraints, hyperparams);
-        total_reward += calculate_homopolymer_reward(sequence, length, nuc, constraints, hyperparams);
-        total_reward += calculate_hairpin_reward(sequence, length, nuc, constraints, hyperparams);
-        // Note: noKeyInPayload and similarity constraints would go here in full implementation
-        
-        rewards[nuc] = total_reward;
+    const Hyperparameters* hyperparams,
+    int num_keys,
+    unsigned char* success_flags)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= num_keys) return;
+
+    curandState local_state = states[tid];
+    unsigned char* my_key = &keys[tid * constraints->key_size];
+    bool key_failed = false;
+
+    for (int pos = 0; pos < constraints->key_size && !key_failed; ++pos) {
+        float log_scores[4], probs[4]; bool failed = false;
+        calculate_log_scores(my_key, pos, log_scores, constraints, hyperparams,
+                             &failed, nullptr, 0, 0, false);
+        if (failed) { key_failed = true; break; }
+        if (!softmax(log_scores, probs)) { key_failed = true; break; }
+        int sel = sample_nucleotide(probs, &local_state);
+        my_key[pos] = (unsigned char)sel;
     }
+
+    success_flags[tid] = key_failed ? 0u : 1u;
+    states[tid] = local_state;
 }
 
-__device__ void softmax(float* rewards, float* probabilities, float temperature = 1.0f) {
-    // Find max for numerical stability
-    float max_reward = rewards[0];
-    for (int i = 1; i < 4; i++) {
-        if (rewards[i] > max_reward) max_reward = rewards[i];
-    }
-    
-    // Calculate exponentials and sum
-    float sum = 0.0f;
-    for (int i = 0; i < 4; i++) {
-        probabilities[i] = expf((rewards[i] - max_reward) / temperature);
-        sum += probabilities[i];
-    }
-    
-    // Normalize
-    if (sum > 0.0f) {
-        for (int i = 0; i < 4; i++) {
-            probabilities[i] /= sum;
-        }
-    } else {
-        // Uniform distribution if all rewards are bad
-        for (int i = 0; i < 4; i++) {
-            probabilities[i] = 0.25f;
-        }
-    }
-}
-
-__device__ int sample_nucleotide(float* probabilities, curandState* state) {
-    float rand_val = curand_uniform(state);
-    float cumulative = 0.0f;
-    
-    for (int i = 0; i < 4; i++) {
-        cumulative += probabilities[i];
-        if (rand_val <= cumulative) {
-            return i;
-        }
-    }
-    return 3; // Fallback to G
-}
-
-// Generate payloads using MDP
-__global__ void mdp_payload_generation_kernel(
+__global__ void mdp_generation_kernel(
     unsigned char* sequences,
     curandState* states,
     const Constraints* constraints,
     const Hyperparameters* hyperparams,
-    int num_sequences
-) {
+    int num_sequences,
+    unsigned char* success_flags,
+    const unsigned char* keys,
+    int key_num,
+    int key_size)
+{
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_sequences) return;
-    
-    curandState local_state = states[tid];
-    unsigned char* my_sequence = &sequences[tid * constraints->payload_size];
-    
-    // Generate payload sequence step by step using MDP
-    for (int pos = 0; pos < constraints->payload_size; pos++) {
-        float rewards[4];
-        float probabilities[4];
-        
-        // Calculate rewards based on current sequence state
-        calculate_rewards(my_sequence, pos, rewards, constraints, hyperparams);
-        
-        // Convert to probabilities using softmax
-        softmax(rewards, probabilities);
-        
-        // Sample next nucleotide
-        int selected = sample_nucleotide(probabilities, &local_state);
-        my_sequence[pos] = selected;
-    }
-    
-    states[tid] = local_state;
-}
 
-// Generate keys (simpler - could use similar MDP approach)
-__global__ void generate_keys_kernel(
-    unsigned char* keys,
-    curandState* states,
-    const Constraints* constraints,
-    int num_keys
-) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= num_keys) return;
-    
     curandState local_state = states[tid];
-    unsigned char* my_key = &keys[tid * constraints->key_size];
-    
-    // For now, generate keys randomly (could use MDP here too)
-    for (int pos = 0; pos < constraints->key_size; pos++) {
-        my_key[pos] = (unsigned char)(curand_uniform(&local_state) * 4);
+    unsigned char* my_seq = &sequences[tid * constraints->payload_size];
+    bool seq_failed = false;
+
+    for (int pos = 0; pos < constraints->payload_size && !seq_failed; ++pos) {
+        float log_scores[4], probs[4]; bool failed = false;
+        calculate_log_scores(my_seq, pos, log_scores, constraints, hyperparams,
+                             &failed, keys, key_num, key_size, true);
+        if (failed) { seq_failed = true; break; }
+        if (!softmax(log_scores, probs)) { seq_failed = true; break; }
+        int sel = sample_nucleotide(probs, &local_state);
+        my_seq[pos] = (unsigned char)sel;
     }
-    
+
+    success_flags[tid] = seq_failed ? 0u : 1u;
     states[tid] = local_state;
 }
 
 __global__ void init_curand_states(curandState* states, unsigned long seed, int n) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < n) {
-        curand_init(seed + tid, 0, 0, &states[tid]);
-    }
+    if (tid < n) curand_init(seed + tid, 0, 0, &states[tid]);
 }
+
+// ======================= Host Helpers =======================
 
 std::string decode_sequence(const std::vector<unsigned char>& seq) {
-    std::string result;
-    const char nucleotides[] = {'A', 'T', 'C', 'G'};
-    for (size_t i = 0; i < seq.size(); i++) {
-        result += nucleotides[seq[i]];
-    }
-    return result;
+    static const char nuc[] = {'A','T','C','G'};
+    std::string s; s.reserve(seq.size());
+    for (auto b : seq) s += nuc[b];
+    return s;
 }
 
-int simulate_success_difficulty(int round) {
-    float difficulty_factor = (float)(round % 20) / 20.0f;
-    
-    if (difficulty_factor < 0.1f) return 14;      // Easy: many payloads
-    else if (difficulty_factor < 0.3f) return 10; // Medium-easy
-    else if (difficulty_factor < 0.5f) return 7;  // Medium
-    else if (difficulty_factor < 0.7f) return 4;  // Medium-hard  
-    else if (difficulty_factor < 0.9f) return 2;  // Hard
-    else return 1;                                 // Very hard
-}
-
-bool validate_sequence(const std::string& seq, const Constraints& constraints) {
-    // GC content validation
-    int gc_count = 0;
-    for (char c : seq) {
-        if (c == 'G' || c == 'C') gc_count++;
+bool validate_gc_hom(const std::string& s, const Constraints& c) {
+    int gc = 0, max_consec = 1, cur = 1;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == 'G' || s[i] == 'C') ++gc;
+        if (i && s[i] == s[i-1]) { ++cur; max_consec = std::max(max_consec, cur); }
+        else cur = 1;
     }
-    float gc_ratio = (float)gc_count / seq.length() * 100.0f;
-    if (gc_ratio < constraints.min_gc || gc_ratio > constraints.max_gc) {
-        return false;
-    }
-    
-    // Homopolymer validation
-    int max_consecutive = 1;
-    int current_consecutive = 1;
-    for (size_t i = 1; i < seq.length(); i++) {
-        if (seq[i] == seq[i-1]) {
-            current_consecutive++;
-            if (current_consecutive > max_consecutive) {
-                max_consecutive = current_consecutive;
-            }
-        } else {
-            current_consecutive = 1;
-        }
-    }
-    if (max_consecutive > constraints.max_hom) {
-        return false;
-    }
-    
-    // Basic hairpin validation (simplified)
-    // Full implementation would check for stem-loop structures
-    
+    float gc_ratio = 100.f * (float)gc / (float)s.size();
+    if (gc_ratio < c.min_gc || gc_ratio > c.max_gc) return false;
+    if (max_consec > c.max_hom) return false;
     return true;
 }
 
-// Generate motifs following Python's get_motifs logic exactly
-std::vector<std::string> generate_motifs_like_python(
-    const std::vector<std::string>& keys, 
-    const std::vector<std::string>& payloads) {
-    
-    std::set<std::string> unique_motifs;  // Use set to avoid duplicates like Python
-    
-    // Match Python's get_motifs logic exactly
-    for (const std::string& payload : payloads) {
-        for (size_t i = 0; i < keys.size(); i++) {
-            // motif1 = keys[i] + payload + keys[i]
-            std::string motif1 = keys[i] + payload + keys[i];
-            unique_motifs.insert(motif1);
-            
-            // motif2 = keys[i] + payload + keys[(i + 1) % len(keys)]
-            std::string motif2 = keys[i] + payload + keys[(i + 1) % keys.size()];
-            unique_motifs.insert(motif2);
-        }
+bool validate_no_key_in_payload(const std::string& payload,
+                               const std::vector<std::string>& keys) {
+    for (const auto& k : keys) {
+        if (k.size() && payload.find(k) != std::string::npos) return false;
     }
-    
-    // Convert set to vector
-    std::vector<std::string> motifs;
-    for (const std::string& motif : unique_motifs) {
-        motifs.push_back(motif);
-    }
-    
-    return motifs;
+    return true;
 }
 
-// Updated save_results function to handle multiple sets like Python
-void save_results(const std::vector<std::vector<std::string>>& all_keys, 
-                  const std::vector<std::vector<std::string>>& all_payloads,
-                  const std::vector<std::vector<std::string>>& all_motifs,
-                  double generation_time,
-                  int success_rate_percent,
-                  int num_rounds = 100) {
-    
-    // Save successful keys - Match Python format exactly
-    std::ofstream keys_file("successful_keys.txt");
-    for (size_t set_idx = 0; set_idx < all_keys.size() && set_idx < 10; set_idx++) {
-        keys_file << "Keys Set " << (set_idx + 1) << ": [";
-        for (size_t i = 0; i < all_keys[set_idx].size(); i++) {
-            keys_file << "'" << all_keys[set_idx][i] << "'";
-            if (i < all_keys[set_idx].size() - 1) keys_file << ", ";
-        }
-        keys_file << "]\n";
-    }
-    keys_file.close();
-    
-    // Save successful payloads - Match Python format
-    std::ofstream payloads_file("successful_payloads.txt");
-    for (size_t set_idx = 0; set_idx < all_payloads.size() && set_idx < 10; set_idx++) {
-        payloads_file << "Payloads Set " << (set_idx + 1) << ": [";
-        for (size_t i = 0; i < all_payloads[set_idx].size(); i++) {
-            payloads_file << "'" << all_payloads[set_idx][i] << "'";
-            if (i < all_payloads[set_idx].size() - 1) payloads_file << ", ";
-        }
-        payloads_file << "]\n";
-    }
-    payloads_file.close();
-    
-    // Save successful motifs - Match Python format exactly
-    std::ofstream motifs_file("successful_motifs.txt");
-    for (size_t set_idx = 0; set_idx < all_motifs.size() && set_idx < 10; set_idx++) {
-        motifs_file << "Motifs Set " << (set_idx + 1) << ":\n";
-        for (size_t i = 0; i < all_motifs[set_idx].size() && i < 20; i++) {  // Show first 20 motifs per set
-            motifs_file << "  " << all_motifs[set_idx][i] << "\n";  // Two spaces indentation like Python
-        }
-        motifs_file << "\n";  // Empty line after set
-    }
-    motifs_file.close();
-    
-    // Console output to match Python format
-    std::cout << "\nResults saved to:\n";
-    std::cout << "- successful_keys.txt\n";
-    std::cout << "- successful_payloads.txt\n"; 
-    std::cout << "- successful_motifs.txt\n";
-    std::cout << "(Showing first 10 successful sets)\n";
-}
+bool validate_no_hairpin(const std::string& s, const Constraints& c) {
+    auto comp = [](char x)->char {
+        if (x=='A') return 'T'; if (x=='T') return 'A';
+        if (x=='C') return 'G'; return 'C';
+    };
+    const int n = (int)s.size();
 
-int main() {
-    printf("=== CUDA MDP DNA Generator - Brunmayr et al. Parameters ===\n");
-    
-    // EXACT parameters from Brunmayr et al. paper Table 1
-    Constraints constraints;
-    constraints.payload_size = 60;
-    constraints.payload_num = 15;
-    constraints.key_size = 20;
-    constraints.key_num = 8;
-    constraints.min_gc = 25.0f;     // Paper standard
-    constraints.max_gc = 65.0f;     // Paper standard
-    constraints.max_hom = 5;        // Paper standard 
-    constraints.max_hairpin = 1;    // Paper standard
-    constraints.loop_size_min = 6;  // Paper standard
-    constraints.loop_size_max = 7;  // Paper standard
-    
-    // Hyperparameters from Python tuning results
-    Hyperparameters hyperparams;
-    hyperparams.hom_shape = 70.0f;
-    hyperparams.gc_shape = 10.0f;
-    hyperparams.hairpin_shape = 8.0f;
-    hyperparams.similarity_shape = 60.0f;
-    hyperparams.no_key_in_payload_shape = 45.0f;
-    
-    hyperparams.hom_weight = 1.0f;
-    hyperparams.gc_weight = 1.0f;
-    hyperparams.hairpin_weight = 1.0f;
-    hyperparams.similarity_weight = 1.0f;
-    hyperparams.no_key_weight = 1.0f;
-    
-    const int num_rounds = 100;
-    const int num_payloads = 100;  // Generate more for better comparison
-    const int threads_per_block = 256;
-    const int blocks = (num_payloads + threads_per_block - 1) / threads_per_block;
-    
-    printf("Starting motif generation with %d rounds...\n", num_rounds);
-    printf("Constraints: {'hom', 'gcContent', 'hairpin', 'noKeyInPayload'}\n");
-    printf("------------------------------------------------------------\n");
-    
-    printf("Parameters (matching Brunmayr et al.):\n");
-    printf("  Payload size: %d bp\n", constraints.payload_size);
-    printf("  Key size: %d bp\n", constraints.key_size);
-    printf("  GC content: %.0f%% - %.0f%%\n", constraints.min_gc, constraints.max_gc);
-    printf("  Max homopolymer: %d\n", constraints.max_hom);
-    printf("  Max hairpin stem: %d\n", constraints.max_hairpin);
-    printf("  Loop size: %d-%d\n", constraints.loop_size_min, constraints.loop_size_max);
-    printf("\nHyperparameters (from Python tuning):\n");
-    printf("  Homopolymer shape: %.0f\n", hyperparams.hom_shape);
-    printf("  GC shape: %.0f\n", hyperparams.gc_shape);
-    printf("  Hairpin shape: %.0f\n", hyperparams.hairpin_shape);
-    
-    // Store successful results - support multiple sets like Python
-    std::vector<std::vector<std::string>> all_successful_keys;
-    std::vector<std::vector<std::string>> all_successful_payloads;
-    std::vector<std::vector<std::string>> all_successful_motifs;
-    
-    int num_successful_motifs = 0;
-    
-    // Track start time
-    clock_t total_start = clock();
-    
-    // Allocate GPU memory
-    unsigned char* d_payloads;
-    unsigned char* d_keys; 
-    curandState* d_states;
-    Constraints* d_constraints;
-    Hyperparameters* d_hyperparams;
-    
-    cudaMalloc(&d_payloads, num_payloads * constraints.payload_size);
-    cudaMalloc(&d_keys, constraints.key_num * constraints.key_size);
-    cudaMalloc(&d_states, (num_payloads + constraints.key_num) * sizeof(curandState));
-    cudaMalloc(&d_constraints, sizeof(Constraints));
-    cudaMalloc(&d_hyperparams, sizeof(Hyperparameters));
-    
-    cudaMemcpy(d_constraints, &constraints, sizeof(Constraints), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_hyperparams, &hyperparams, sizeof(Hyperparameters), cudaMemcpyHostToDevice);
-    
-    // Initialize random states
-    int total_threads = num_payloads + constraints.key_num;
-    int total_blocks = (total_threads + threads_per_block - 1) / threads_per_block;
-    init_curand_states<<<total_blocks, threads_per_block>>>(d_states, time(NULL), total_threads);
-    cudaDeviceSynchronize();
-    
-    printf("\nGenerating sequences...\n");
-    
-    // Main generation loop (simulate 100 rounds like Python)
-    for (int round = 0; round < num_rounds; round++) {
-        clock_t start = clock();
-        
-        // Generate keys
-        generate_keys_kernel<<<(constraints.key_num + threads_per_block - 1) / threads_per_block, threads_per_block>>>(
-            d_keys, d_states, d_constraints, constraints.key_num);
-        
-        // Generate payloads using MDP
-        mdp_payload_generation_kernel<<<blocks, threads_per_block>>>(
-            d_payloads, &d_states[constraints.key_num], d_constraints, d_hyperparams, num_payloads);
-        
-        cudaDeviceSynchronize();
-        clock_t end = clock();
-        
-        // Copy results back
-        std::vector<unsigned char> h_payloads(num_payloads * constraints.payload_size);
-        std::vector<unsigned char> h_keys(constraints.key_num * constraints.key_size);
-        
-        cudaMemcpy(h_payloads.data(), d_payloads, 
-                   num_payloads * constraints.payload_size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_keys.data(), d_keys, 
-                   constraints.key_num * constraints.key_size, cudaMemcpyDeviceToHost);
-        
-        // Process keys
-        std::vector<std::string> keys;
-        for (int i = 0; i < constraints.key_num; i++) {
-            std::vector<unsigned char> key_seq(
-                h_keys.begin() + i * constraints.key_size,
-                h_keys.begin() + (i + 1) * constraints.key_size
-            );
-            std::string key_str = decode_sequence(key_seq);
-            keys.push_back(key_str);
-        }
-        
-        // Process and validate payloads
-        std::vector<std::string> valid_payloads;
-        int valid_count = 0;
+    for (int i = 0; i < n; ++i) {
+        for (int loop = c.loop_size_min; loop <= c.loop_size_max; ++loop) {
+            int stem_len = 0;
+            while (true) {
+                int right = i - stem_len;
+                int left = i - loop - 1 - stem_len;
+                if (left < 0 || right >= n) break;
 
-        int target_payload_count = simulate_success_difficulty(round);
-
-        for (int i = 0; i < num_payloads && valid_count < target_payload_count; i++) {
-            std::vector<unsigned char> payload_seq(
-                h_payloads.begin() + i * constraints.payload_size,
-                h_payloads.begin() + (i + 1) * constraints.payload_size
-            );
-            std::string payload_str = decode_sequence(payload_seq);
-            
-            if (validate_sequence(payload_str, constraints)) {
-                valid_payloads.push_back(payload_str);
-                valid_count++;
-            }
-        }
-        
-        // If we have valid keys and payloads, generate motifs
-        if (!keys.empty() && !valid_payloads.empty()) {
-            std::vector<std::string> motifs = generate_motifs_like_python(keys, valid_payloads);
-            
-            if (!motifs.empty()) {
-                // Store successful results (store multiple sets like Python)
-                if (num_successful_motifs < 10) {  // Store up to 10 successful sets like Python
-                    all_successful_keys.push_back(keys);
-                    all_successful_payloads.push_back(valid_payloads);
-                    all_successful_motifs.push_back(motifs);
+                if (s[left] == comp(s[right])) {
+                    ++stem_len;
+                    if (stem_len > c.max_hairpin) return false;
+                } else {
+                    break;
                 }
-                num_successful_motifs++;
             }
         }
-        
-        // Progress indicator - show every 10 iterations
-        if ((round + 1) % 10 == 0) {
-            double elapsed_time = ((double)(clock() - total_start) / CLOCKS_PER_SEC) * 1000.0;
-            double success_rate = ((double)num_successful_motifs / (round + 1)) * 100.0;
-            double avg_time_per_round = elapsed_time / (round + 1);
-            double estimated_total_time = avg_time_per_round * num_rounds;
-            double remaining_time = estimated_total_time - elapsed_time;
-            
-            printf("Progress: %5d/%d (%5.1f%%) | Success: %4d (%5.1f%%) | "
-                   "Elapsed: %6.1fs | ETA: %6.1fs\n",
-                   round + 1, num_rounds, (double)(round + 1)/num_rounds*100.0,
-                   num_successful_motifs, success_rate,
-                   elapsed_time/1000.0, remaining_time/1000.0);
+    }
+    return true;
+}
+
+std::vector<std::string> generate_motifs(
+    const std::vector<std::string>& keys,
+    const std::vector<std::string>& payloads)
+{
+    std::set<std::string> uniq;
+    for (const auto& p : payloads) {
+        for (size_t i = 0; i < keys.size(); ++i) {
+            std::string m1 = keys[i] + p + keys[i];
+            std::string m2 = keys[i] + p + keys[(i + 1) % keys.size()];
+            uniq.insert(m1); uniq.insert(m2);
         }
     }
-    
-    // Final results
-    clock_t total_end = clock();
-    double total_time = ((double)(total_end - total_start) / CLOCKS_PER_SEC) * 1000.0;
-    double success_rate = ((double)num_successful_motifs / num_rounds) * 100.0;
-    
+    std::vector<std::string> v; v.reserve(uniq.size());
+    for (auto& x : uniq) v.push_back(x);
+    return v;
+}
+
+void save_results(const std::vector<std::vector<std::string>>& all_keys,
+                 const std::vector<std::vector<std::string>>& all_payloads,
+                 const std::vector<std::vector<std::string>>& all_motifs)
+{
+    try {
+        std::ofstream fk("successful_keys.txt");
+        for (size_t s = 0; s < all_keys.size() && s < 10; ++s) {
+            fk << "Keys Set " << (s+1) << ": [";
+            for (size_t i = 0; i < all_keys[s].size(); ++i) {
+                fk << "'" << all_keys[s][i] << "'";
+                if (i + 1 < all_keys[s].size()) fk << ", ";
+            }
+            fk << "]\n";
+        }
+
+        std::ofstream fp("successful_payloads.txt");
+        for (size_t s = 0; s < all_payloads.size() && s < 10; ++s) {
+            fp << "Payloads Set " << (s+1) << ": [";
+            for (size_t i = 0; i < all_payloads[s].size(); ++i) {
+                fp << "'" << all_payloads[s][i] << "'";
+                if (i + 1 < all_payloads[s].size()) fp << ", ";
+            }
+            fp << "]\n";
+        }
+
+        std::ofstream fm("successful_motifs.txt");
+        for (size_t s = 0; s < all_motifs.size() && s < 10; ++s) {
+            fm << "Motifs Set " << (s+1) << ":\n";
+            for (size_t i = 0; i < all_motifs[s].size() && i < 20; ++i) {
+                fm << "  " << all_motifs[s][i] << "\n";
+            }
+            fm << "\n";
+        }
+    } catch (const std::exception& e) {
+        printf("Error menulis file: %s\n", e.what());
+    }
+}
+
+// ======================= MAIN =======================
+int main() {
+    printf("=== CUDA MDP DNA Generator  ===\n");
+
+    // Input Parameter 
+    Constraints c{};
+    c.payload_size = 60; c.payload_num = 15;
+    c.key_size = 20;     c.key_num    = 8;
+    c.min_gc = 25.f;     c.max_gc     = 65.f;
+    c.max_hom = 5;       c.max_hairpin = 1;
+    c.loop_size_min = 6; c.loop_size_max = 7;
+
+    Hyperparameters h{};
+    h.hom_shape = 70.f; h.gc_shape = 10.f; h.hairpin_shape = 8.f;
+    h.similarity_shape = 60.f; h.no_key_in_payload_shape = 45.f;
+    h.hom_weight = 1.f; h.gc_weight = 1.f; h.hairpin_weight = 1.f;
+    h.similarity_weight = 1.f; h.no_key_weight = 1.f;
+
+    const int num_rounds = 1000;
+    const int TPB = 256;
+    const int blocks_keys = (c.key_num + TPB - 1) / TPB;
+    const int blocks_payload = (c.payload_num + TPB - 1) / TPB;
+
+    printf("Starting motif generation with %d rounds...\n", num_rounds);
+    printf("Constraints: {'hom','gcContent','hairpin','noKeyInPayload'}\n");
+    printf("------------------------------------------------------------\n");
+
+    std::vector<std::vector<std::string>> all_keys_ok;
+    std::vector<std::vector<std::string>> all_payloads_ok;
+    std::vector<std::vector<std::string>> all_motifs_ok;
+    int successful_sets = 0;
+
+    clock_t t0 = clock();
+
+    // Device buffers
+    unsigned char *d_payloads = nullptr, *d_keys = nullptr;
+    curandState *d_states = nullptr;
+    Constraints *d_c = nullptr; Hyperparameters *d_h = nullptr;
+    unsigned char *d_key_success = nullptr, *d_payload_success = nullptr;
+
+    CUDA_CHECK(cudaMalloc(&d_payloads, c.payload_num * c.payload_size * sizeof(unsigned char)));
+    CUDA_CHECK(cudaMalloc(&d_keys, c.key_num * c.key_size * sizeof(unsigned char)));
+    CUDA_CHECK(cudaMalloc(&d_states, (c.payload_num + c.key_num) * sizeof(curandState)));
+    CUDA_CHECK(cudaMalloc(&d_c, sizeof(Constraints)));
+    CUDA_CHECK(cudaMalloc(&d_h, sizeof(Hyperparameters)));
+    CUDA_CHECK(cudaMalloc(&d_key_success, c.key_num * sizeof(unsigned char)));
+    CUDA_CHECK(cudaMalloc(&d_payload_success, c.payload_num * sizeof(unsigned char)));
+
+    CUDA_CHECK(cudaMemcpy(d_c, &c, sizeof(Constraints), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_h, &h, sizeof(Hyperparameters), cudaMemcpyHostToDevice));
+
+    for (int round = 0; round < num_rounds; ++round) {
+        // Inisialisasi seed acak per ronde
+        int total_threads = c.payload_num + c.key_num;
+        int total_blocks = (total_threads + TPB - 1) / TPB;
+        init_curand_states<<<total_blocks, TPB>>>(d_states, (unsigned long)time(NULL) + round * 1000, total_threads);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // 1) Generate KEYS
+        key_generation_kernel<<<blocks_keys, TPB>>>(
+            d_keys, d_states, d_c, d_h, c.key_num, d_key_success);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // 2) Generate PAYLOADS
+        mdp_generation_kernel<<<blocks_payload, TPB>>>(
+            d_payloads, &d_states[c.key_num], d_c, d_h,
+            c.payload_num, d_payload_success, d_keys, c.key_num, c.key_size);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // Copy back
+        std::vector<unsigned char> h_keys(c.key_num * c.key_size);
+        std::vector<unsigned char> h_payloads(c.payload_num * c.payload_size);
+        std::vector<unsigned char> h_key_success(c.key_num);
+        std::vector<unsigned char> h_payload_success(c.payload_num);
+
+        CUDA_CHECK(cudaMemcpy(h_keys.data(), d_keys, h_keys.size() * sizeof(unsigned char), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_payloads.data(), d_payloads, h_payloads.size() * sizeof(unsigned char), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_key_success.data(), d_key_success, h_key_success.size(), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_payload_success.data(), d_payload_success, h_payload_success.size(), cudaMemcpyDeviceToHost));
+
+        // Decode only successful KEYS
+        std::vector<std::string> keys_str;
+        for (int k = 0; k < c.key_num; ++k) if (h_key_success[k]) {
+            std::vector<unsigned char> key_seq(
+                h_keys.begin() + k * c.key_size,
+                h_keys.begin() + (k + 1) * c.key_size);
+            keys_str.push_back(decode_sequence(key_seq));
+        }
+        if (keys_str.size() < c.key_num) continue; // Memerlukan semua key berhasil
+
+        // Decode & validate PAYLOADS
+        std::vector<std::string> payloads_str;
+        for (int i = 0; i < c.payload_num; ++i) {
+            if (!h_payload_success[i]) continue;
+
+            std::vector<unsigned char> pl_seq(
+                h_payloads.begin() + i * c.payload_size,
+                h_payloads.begin() + (i + 1) * c.payload_size);
+            std::string pl = decode_sequence(pl_seq);
+
+            if (!validate_gc_hom(pl, c)) continue;
+            if (!validate_no_hairpin(pl, c)) continue;
+            if (!validate_no_key_in_payload(pl, keys_str)) continue;
+
+            payloads_str.push_back(pl);
+        }
+        if (payloads_str.size() < c.payload_num) continue; // Memerlukan semua payload berhasil
+
+        // Generate motifs
+        auto motifs = generate_motifs(keys_str, payloads_str);
+        if (!motifs.empty()) {
+            all_keys_ok.push_back(keys_str);
+            all_payloads_ok.push_back(payloads_str);
+            all_motifs_ok.push_back(motifs);
+            ++successful_sets;
+        }
+
+        // every 100 itteration
+        if (round % 100 == 0 && round > 0) {
+            double elapsed_ms = (double)(clock() - t0) / CLOCKS_PER_SEC * 1000.0;
+            double succ_rate = 100.0 * (double)successful_sets / round;
+            double avg_ms = elapsed_ms / round;
+            double eta_ms = avg_ms * (num_rounds - round);
+
+            printf("Progress: %5d/%d (%4.1f%%) | Success: %4d (%5.1f%%) | Elapsed: %6.1fs | ETA: %6.1fs\n",
+                   round, num_rounds, 100.0 * round / num_rounds, successful_sets, succ_rate,
+                   elapsed_ms / 1000.0, eta_ms / 1000.0);
+        }
+    }
+
+    // Final
+    double total_ms = (double)(clock() - t0) / CLOCKS_PER_SEC * 1000.0;
+    double succ_rate = 100.0 * (double)successful_sets / num_rounds;
     printf("------------------------------------------------------------\n");
     printf("COMPLETED!\n");
     printf("Total rounds: %d\n", num_rounds);
-    printf("Successful motif sets: %d\n", num_successful_motifs);
-    printf("Success rate: %.2f%%\n", success_rate);
-    printf("Total time: %.1f seconds (%.1f minutes)\n", total_time/1000.0, total_time/60000.0);
-    printf("Average time per round: %.3f seconds\n", total_time/num_rounds/1000.0);
-    
-    // Save results to files
-    if (num_successful_motifs > 0) {
+    printf("Successful motif sets: %d\n", successful_sets);
+    printf("Success rate: %.2f%%\n", succ_rate);
+    printf("Total time: %.1f seconds (%.1f minutes)\n", total_ms / 1000.0, total_ms / 60000.0);
+    printf("Average time per round: %.3f seconds\n", total_ms / num_rounds / 1000.0);
+
+    if (successful_sets > 0) {
         printf("\nSaving results to files...\n");
-        save_results(all_successful_keys, all_successful_payloads, all_successful_motifs, 
-                    total_time, (int)success_rate, num_rounds);
-        
-        // Show sample results from first set
-        printf("\nSample from first successful set:\n");
-        if (!all_successful_keys.empty() && !all_successful_keys[0].empty()) {
+        save_results(all_keys_ok, all_payloads_ok, all_motifs_ok);
+        printf("Results saved to:\n- successful_keys.txt\n- successful_payloads.txt\n- successful_motifs.txt\n");
+        printf("(Showing first 10 successful sets)\n");
+
+        if (!all_keys_ok.empty()) {
+            printf("\nSample from first successful set:\n");
             printf("Keys: [");
-            for (size_t i = 0; i < all_successful_keys[0].size(); i++) {
-                printf("'%s'", all_successful_keys[0][i].c_str());
-                if (i < all_successful_keys[0].size() - 1) printf(", ");
+            for (size_t i = 0; i < all_keys_ok[0].size(); ++i) {
+                printf("'%s'", all_keys_ok[0][i].c_str());
+                if (i + 1 < all_keys_ok[0].size()) printf(", ");
             }
             printf("]\n");
-        }
-        
-        if (!all_successful_payloads.empty() && !all_successful_payloads[0].empty()) {
             printf("Payloads: [");
-            for (size_t i = 0; i < all_successful_payloads[0].size() && i < 3; i++) {
-                printf("'%s'", all_successful_payloads[0][i].c_str());
-                if (i < std::min(all_successful_payloads[0].size(), (size_t)3) - 1) printf(", ");
+            for (size_t i = 0; i < 3 && i < all_payloads_ok[0].size(); ++i) {
+                printf("'%s'", all_payloads_ok[0][i].c_str());
+                if (i + 1 < 3 && i + 1 < all_payloads_ok[0].size()) printf(", ");
             }
-            printf("...]");
-            printf(" (%zu total payloads)\n", all_successful_payloads[0].size());
-        }
-        
-        if (!all_successful_motifs.empty() && !all_successful_motifs[0].empty()) {
+            printf("]...\n");
             printf("Motifs: [");
-            for (size_t i = 0; i < all_successful_motifs[0].size() && i < 5; i++) {
-                printf("'%s'", all_successful_motifs[0][i].c_str());
-                if (i < std::min(all_successful_motifs[0].size(), (size_t)5) - 1) printf(", ");
+            for (size_t i = 0; i < 5 && i < all_motifs_ok[0].size(); ++i) {
+                printf("'%s'", all_motifs_ok[0][i].c_str());
+                if (i + 1 < 5 && i + 1 < all_motifs_ok[0].size()) printf(", ");
             }
-            printf("...]");
-            printf(" (%zu total motifs)\n", all_successful_motifs[0].size());
+            printf("]...\n");
         }
     }
-    
-    // Cleanup
-    cudaFree(d_payloads);
-    cudaFree(d_keys);
-    cudaFree(d_states);
-    cudaFree(d_constraints);
-    cudaFree(d_hyperparams);
-    
-    printf("\n✅ CUDA implementation with Python-matched format completed!\n");
-    printf("📊 Ready for comparison with Python baseline (2.54 seconds target)\n");
-    
+
+    cudaFree(d_payloads); cudaFree(d_keys); cudaFree(d_states);
+    cudaFree(d_c); cudaFree(d_h);
+    cudaFree(d_key_success); cudaFree(d_payload_success);
+
+    printf("\n Finish.\n");
     return 0;
 }

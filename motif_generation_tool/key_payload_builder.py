@@ -87,7 +87,7 @@ async def main():
                               key_num=key_num, loop_size_min=loop_size_min, \
                               loop_size_max=loop_size_max)
 
-    num_rounds = 100
+    num_rounds = 1000
     num_successful_motifs = 0
     with_constraints = {'hom', 'gcContent', 'hairpin', 'noKeyInPayload'}
     
