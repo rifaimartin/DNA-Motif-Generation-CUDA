@@ -1,76 +1,84 @@
-# MEng Project
+# DNA-Motif-Generation-CUDA
 
-## About the Project
+GPU-accelerated DNA motif generation using CUDA implementation of Markov Decision Process (MDP) for motif-based DNA storage. Based on Brunmayr et al. (2025) Motif Generation Tool with significant performance improvements.
+This program implements a Markov Decision Process (MDP) to generate DNA motifs using CUDA for parallelization. The program generates keys and payloads that satisfy biological constraints and then combines them into motifs for DNA storage.
 
-Currently, motif-based DNA storage is a cheap DNA storage option where only short DNA sequences are constructed and then assembled. However, due to biological and technological constraints involved in storing data in molecules, many encodings of arbitrary data to DNA end up being extremely error-prone, making DNA storage not a reliable storage option. Having to find an encoding design which takes into account those constraints as well as encodes a given data can be time extensive and challenging.
-
-So to facilitate the search for a motif-based encoding design which conforms to a set of biological and technological constraints, we implemented:
-
-1. A motif generation tool using Markov Chains which outputs a set of keys and payloads given a set of constraints.
-
-The tool can be found on: https://ssb5018.pythonanywhere.com
-
-## Getting Started
+## Quick Start
 
 ### Prerequisites
-* Python 3.8 or above.
+- Python 3.8+
+- NVIDIA GPU with CUDA capability
+- CUDA Toolkit 11.0+
 
-### Installations
-```bash
-pip install -r /path/to/requirements.txt
-```
-To install asyncio, run the following command:
-```bash
-pip install asyncio
-```
+### Installation
+
+1. **Install CUDA Toolkit**
+   ```bash
+   # Download from: https://developer.nvidia.com/cuda-toolkit
+   # Or use conda:
+   conda install cudatoolkit
+   ```
+
+2. **Install Python Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   pip install asyncio
+   ```
+
+3. **Verify CUDA Installation**
+   ```bash
+   nvcc --version
+   nvidia-smi
+   ```
+
 ## Usage
-### Motif Generation Tool
 
-To get a list of keys and set of payloads conforming to the given constraints, use the Motif Generation Tool. 
-
-The constraints can be inputted directly in the main function of the motif_generation_tool/key_payload_builder.py file.
-
-To run the Motif Generation Tool, run the following command from inside the motif_generation_tool directory:
+### Run CUDA Implementation
 ```bash
+cd cuda_implementation
+nvcc -o mdp mdp.cu -lcurand
+./mdp
+```
+
+### Run Python Baseline (for comparison)
+```bash
+cd motif_generation_tool
 python -m key_payload_builder run
 ```
 
-#### Hyperparameter Tuning
-
-To run the hyperparameter tuning, run the following command from inside the motif_generation_tool directory:
-```bash
-python -m hyperparameters.hyperparameter_tuning run
-```
-
-The hypTun.txt file inside of the hyperparameters folder holds the output of the first round of hyperparameter tuning. It is the result of running the hyperparameter_tuning.py file with shape values [10, 20, 30, 40, 50], and weight values set to 1.
-
-The hypTun2.txt file inside of the hyperparameters folder holds the output of the second round of hyperparameter tuning. It is the result of the hyperparameter_tuning.py file with the following input for shape values (weight values are set to 1):
-
-```bash
-shape_values = {'hom': [50, 55, 60, 65, 70], 
-                'hairpin': [2, 4, 6, 8, 10], 
-                'similarity': [50, 55, 60, 65, 70], 
-                'gcContent': [7, 10, 13, 16, 19], 
-                'noKeyInPayload': [15, 20, 35, 40, 45]
-                }
-```
-
-To view the results in form of a heatmap, run the dataExtract() function inside of the hyperparameter_tuning.py file.
-The results of the first and second round of hyperparamter tuning can be found inside of the figures folder (motif_generation_tool/hyperparameters/figures).
-
-### Tests
-
-To run the tests, first go to the root directory.
-
-Run tests using the following command line: 
-```bash
-python3 -m pytest unit_tests/[insert file name].py
-```
-For example: 
+### Run Tests
 ```bash
 python3 -m pytest unit_tests/hairpin_tests.py
+python3 -m pytest unit_tests/[test_file].py
 ```
 
+## Project Structure
+```
+├── cuda_implementation/        # CUDA C++ implementation
+│   └── mdp.cu                 # Main CUDA code
+├── motif_generation_tool/     # Original Python baseline
+├── unit_tests/               # Test files
+├── requirements.txt          # Python dependencies
+└── README.md
+```
 
+## Performance
+- **Target**: 10-50x speedup vs CPU implementation
+- **Generation time**: <2 seconds (vs >5 minutes with existing tools)
+- **Constraint compliance**: ≥99%
 
+## Tools
+- **Generation**: https://ssb5018.pythonanywhere.com/
+- **Validation**: http://ssb22.pythonanywhere.com/
 
+## Souce Code Brunmayr et al. paper
+
+-- **motiif-generation-tool** : https://github.com/ssb5018/motif-generation-tool
+-- **motiif-generation-tool** : https://github.com/ssb5018/dna-validation
+
+## Parameters
+Based on Brunmayr et al. paper with hyperparameter tuning:
+- Payload: 60bp, Key: 20bp
+- GC content: 25-65%
+- Max homopolymer: 5, Max hairpin: 1
+- Optimized shape parameters from hyperparameter tuning
