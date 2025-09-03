@@ -63,9 +63,9 @@ python3 -m pytest unit_tests/[test_file].py
 ```
 
 ## Performance
-- **Target**: 10-50x speedup vs CPU implementation
+- **Target**: 10-50x speedup vs CPU implementation (python)
 - **Generation time**: <2 seconds (vs >5 minutes with existing tools)
-- **Constraint compliance**: ≥99%
+- **Constraint compliance**: ?
 
 ## Tools
 - **Generation**: https://ssb5018.pythonanywhere.com/
@@ -73,8 +73,8 @@ python3 -m pytest unit_tests/[test_file].py
 
 ## Souce Code Brunmayr et al. paper
 
--- **motiif-generation-tool** : https://github.com/ssb5018/motif-generation-tool
--- **motiif-generation-tool** : https://github.com/ssb5018/dna-validation
+- **motiif-generation-tool** : https://github.com/ssb5018/motif-generation-tool
+- **motiif-generation-tool** : https://github.com/ssb5018/dna-validation
 
 ## Parameters
 Based on Brunmayr et al. paper with hyperparameter tuning:
