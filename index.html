@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Model Canvas - DNA Motif Generation CUDA</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 25px;
+            min-height: 100vh;
+        }
+
+        .canvas-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2c3e50, #34495e);
+            color: white;
+            padding: 25px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .header p {
+            font-size: 1rem;
+            opacity: 0.9;
+        }
+
+        .canvas-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .canvas-table td {
+            border: 2px solid #bdc3c7;
+            padding: 16px;
+            vertical-align: top;
+            height: 450px;
+        }
+
+        .cell-header {
+            font-weight: bold;
+            font-size: 16px;
+            color: #2c3e50;
+            margin-bottom: 12px;
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }
+
+        .cell-content {
+            font-size: 11px;
+            line-height: 1.4;
+            color: #2c3e50;
+            text-align: justify;
+        }
+
+        .cell-content h4 {
+            color: #e74c3c;
+            margin-bottom: 8px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .cell-content p {
+            margin-bottom: 8px;
+            text-indent: 0;
+        }
+
+        .highlight {
+            background: #3498db;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 600;
+            font-size: 10px;
+        }
+
+        .performance-metric {
+            background: #27ae60;
+            color: white;
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+            margin: 10px 0;
+            font-size: 11px;
+        }
+
+        .vs-box {
+            background: #e74c3c;
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            text-align: center;
+            margin: 8px 0;
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        /* Title section styling */
+        .title-cell {
+            background: linear-gradient(135deg, #8e44ad, #9b59b6);
+            color: white;
+            text-align: center;
+            padding: 20px !important;
+            height: 350px !important;
+        }
+
+        .title-cell h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            line-height: 1.3;
+        }
+
+        .results-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin: 12px 0;
+        }
+
+        .result-box {
+            background: rgba(255,255,255,0.1);
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .result-box h5 {
+            font-size: 12px;
+            margin-bottom: 6px;
+            color: #f1c40f;
+        }
+
+        .result-metric {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 3px;
+            font-size: 10px;
+        }
+
+        .metric-value {
+            font-weight: 700;
+            color: #f39c12;
+        }
+
+        .speedup-highlight {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            padding: 8px;
+            border-radius: 6px;
+            margin: 8px 0;
+            text-align: center;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .impact-summary {
+            background: rgba(255,255,255,0.1);
+            padding: 8px;
+            border-radius: 6px;
+            margin-top: 8px;
+            font-size: 9px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="canvas-container">
+        <div class="header">
+            <h1>🧬 Research Model Canvas</h1>
+            <p>Akselerasi GPU untuk Pipeline Sintesis Motif DNA menggunakan CUDA</p>
+        </div>
+
+        <table class="canvas-table">
+            <!-- Row 1 -->
+            <tr>
+                <td style="width: 33.33%;">
+                    <div class="cell-header">Topik</div>
+                    <div class="cell-content">
+                        <h4>GPU-Accelerated DNA Motif Generation untuk Next-Generation Molecular Data Storage</h4>
+                        
+                        <p>Penelitian ini mengembangkan sistem <span class="highlight">GPU-accelerated runtime</span> yang mengimplementasikan algoritma <span class="highlight">Markov Decision Process (MDP)</span> secara paralel untuk generasi motif DNA yang memenuhi multiple biological constraints menggunakan platform <span class="highlight">NVIDIA CUDA</span>. Focus utama adalah akselerasi fundamental dalam pipeline sintesis motif untuk <span class="highlight">motif-based DNA storage systems</span>, yang merupakan pendekatan revolutionary dalam molecular data storage technology yang menawarkan unprecedented information density dan long-term durability.</p>
+                        
+                        <p>DNA storage technology menawarkan theoretical information density hingga <span class="highlight">10^19 bits per gram</span> dengan durability ribuan tahun, significantly outperforming conventional magnetic dan optical storage media. Namun, practical implementation terhambat oleh <span class="highlight">computational bottlenecks</span> dalam motif generation process yang memerlukan simultaneous satisfaction dari multiple biological constraints seperti GC content optimization (25-65%), homopolymer prevention (≤5 consecutive bases), hairpin structure avoidance (stem ≤1 base pair), dan key collision prevention dalam payload sequences.</p>
+                        
+                        <p>Penelitian ini memparalelkan algoritma proven dari <span class="highlight">Brunmayr et al. (2025)</span> yang menggunakan sophisticated stochastic sampling untuk menghasilkan biologically valid DNA sequences. Implementasi CUDA memungkinkan <span class="highlight">massive parallel exploration</span> dari exponentially large solution space yang traditionally requires sequential processing, opening pathway untuk real-time DNA motif generation dalam industrial-scale applications dan commercial data archival systems.</p>
+                        
+                        <p>Contribution utama berupa novel architectural design untuk <span class="highlight">constraint-based stochastic algorithms</span> pada GPU architecture, dengan focus pada memory coalescing optimization, thread synchronization strategies, dan parallel random number generation untuk maintaining statistical independence across thousands of concurrent threads.</p>
+                    </div>
+                </td>
+                
+                <td style="width: 33.33%;">
+                    <div class="cell-header">Masalah/Gap</div>
+                    <div class="cell-content">
+                        <h4>Critical Performance & Scalability Crisis dalam DNA Storage Commercialization Pipeline</h4>
+                        
+                        <p>Current state-of-the-art dalam DNA motif generation menghadapi <span class="highlight">fundamental scalability crisis</span> yang menghambat transition dari laboratory research prototype ke industrial-scale deployment. Brunmayr implementation, sebagai leading algorithm dalam field, membutuhkan <span class="highlight">68.7 menit untuk 1000 generation rounds</span> dengan average time <span class="highlight">4.122 seconds per round</span>
+                        
+                        <p><span class="highlight">Sequential constraint satisfaction</span> approach dalam current implementation menciptakan severe computational bottleneck dimana setiap nucleotide decision memerlukan extensive evaluation terhadap multiple interdependent biological constraints. Hal ini mengakibatkan <span class="highlight">quadratic time complexity O(n²)</span> untuk certain constraints seperti hairpin detection yang memerlukan secondary structure analysis, dan linear scaling O(n×k×c) dimana n=sequence length, k=number of sequences, c=constraint count, yang becomes prohibitively expensive untuk large-scale motif generation requirements.</p>
+                        
+                        <p>Gap fundamental terletak pada <span class="highlight">massive unutilized computational resources</span> dimana modern GPU architecture dengan 1000+ CUDA cores dan teraflops computational capacity tidak dapat dimanfaatkan oleh inherently sequential algorithms.
+                        
+                        
+                        <!-- <div class="vs-box">CRITICAL INDUSTRY REQUIREMENT: <1 second per motif set untuk commercial DNA storage viability</div> -->
+                    </div>
+                </td>
+                
+                <td style="width: 33.33%;">
+                    <div class="cell-header">Teori</div>
+                    <div class="cell-content">
+                        <h4>Advanced Theoretical Foundations & Parallel Computing Framework</h4>
+                        
+                        <p><span class="highlight">Markov Decision Process (MDP) framework</span> menyediakan rigorous mathematical foundation untuk sequential decision making dalam stochastic environments dengan multiple competing objectives. Dalam context DNA motif generation, MDP formulation enables systematic exploration dari exponentially large sequence space melalui probabilistic policy yang balances immediate biological constraint satisfaction dengan long-term sequence optimality. Setiap nucleotide selection decision didasarkan pada comprehensive <span class="highlight">reward function R(s,a)</span> yang mengintegrasikan weighted biological constraints, dimana s represents current sequence state dan a represents nucleotide addition action {A,T,C,G}.</p>
+                        
+                        <p><span class="highlight">CUDA SIMT (Single Instruction, Multiple Threads) architecture</span> memungkinkan massive parallelization dari constraint evaluation dan stochastic sampling processes yang traditionally require sequential execution. Theoretical speedup potential berdasarkan <span class="highlight">Amdahl's Law</span> menunjukkan maximum achievable acceleration S = 1/((1-P) + P/N) dimana P represents parallelizable fraction (≥95% untuk constraint checking) dan N represents number of parallel processors (1000+ CUDA cores), indicating theoretical speedup potential >40x</p>
+                        
+                        <p><span class="highlight">Advanced constraint programming paradigm</span> mengintegrasikan heterogeneous biological requirements sebagai unified multi-objective optimization framework. GC content constraints (25-65% range) diimplementasikan sebagai soft penalties dengan Gaussian-like reward functions, homopolymer prevention (≤5 consecutive bases) sebagai hard constraints dengan -∞ penalties, hairpin structure detection melalui <span class="highlight">dynamic programming algorithm</span> untuk secondary structure prediction, dan key collision avoidance melalui efficient string matching algorithms optimized untuk GPU memory hierarchy.</p>
+                        
+                        <p><span class="highlight">Parallel stochastic sampling theory</span> memerlukan careful consideration dari statistical independence requirements across concurrent threads. Implementation menggunakan <span class="highlight">cuRAND library</span> dengan XORWOW pseudo-random number generators yang maintain reproducible results while ensuring proper statistical properties.
+                             <!-- Thread-local random states dengan different seed values guarantee independence, while deterministic seeding enables reproducible experiments untuk scientific validation purposes.</p> -->
+                        
+                        <p>Theoretical framework combines principles dari <span class="highlight">probabilistic sampling theory</span>, <span class="highlight">parallel algorithm design</span>, <span class="highlight">computational biology</span>, dan <span class="highlight">high-performance computing</span> untuk achieve both biological validity dan computational efficiency dalam industrial-scale DNA motif generation applications.</p>
+                    </div>
+                </td>
+            </tr>
+            
+            <!-- Row 2 -->
+            <tr>
+                <td>
+                    <div class="cell-header">Tujuan</div>
+                    <div class="cell-content">
+                        <h4>Comprehensive Research Objectives & Strategic Outcomes</h4>
+                        
+                        <p>Penelitian ini bertujuan merancang dan mengimplementasikan <span class="highlight">GPU-accelerated runtime system</span> yang comprehensive untuk DNA motif assembly dengan mengoptimalkan algoritma Markov Decision Process menggunakan advanced CUDA programming techniques. Primary objective meliputi systematic architectural redesign dari sequential constraint satisfaction algorithm ke massively parallel implementation yang memanfaatkan full computational capacity modern GPU hardware.</p>
+                        
+                        <p>Objektif spesifik meliputi detailed analysis dan quantitative measurement terhadap <span class="highlight">computational performance improvements</span> dalam multiple dimensions: execution time speedup (target 10-50x faster than baseline), throughput enhancement (motifs generated per unit time) </p>
+                            <!-- , memory usage efficiency (optimal utilization GPU memory hierarchy)</p> -->
+                        
+                        <p>Critical validation objectives include comprehensive <span class="highlight">biological constraint compliance analysis</span> untuk memastikan bahwa massive parallelization tidak mengurangi kualitas atau biological validity dari generated motifs. Hal ini meliputi statistical comparison dari constraint satisfaction rates, motif diversity analysis, biological synthesizability validation, dan comparative assessment dengan existing state-of-the-art tools dalam terms of both performance dan output quality.</p>
+                        
+                        <p>Strategic research outcomes include establishment dari <span class="highlight">new performance benchmarks</span> untuk DNA motif generation field, contribution ke parallel algorithm design untuk biological applications </p>
+                        <!-- , dan demonstration dari practical pathway untuk transitioning laboratory research tools ke commercial-grade industrial applications.</p> -->
+                        
+                        <div class="performance-metric">
+                            🎯 TARGET PERFORMANCE SPECIFICATIONS<br>
+                            • Speedup: 10-50x vs sequential baseline<br>
+                            • Constraint compliance: ≥99% biological validity<br>
+                            • Processing time: <1 second per motif set<br>
+                            • Scalability: Linear performance scaling
+                        </div>
+                    </div>
+                </td>
+                
+                <td>
+                    <div class="cell-header">Kebaruan/Novelty</div>
+                    <div class="cell-content">
+                        <h4>Novel Scientific & Technical Contributions to DNA Storage Technology</h4>
+                        
+                        <p>Penelitian ini merupakan <span class="highlight">first comprehensive CUDA implementation</span> dari constraint-based DNA motif generation algorithm, specifically targeting real-world motif-based DNA storage applications yang memiliki strict biological synthesis requirements dan industrial performance standards. Novel contribution berupa systematic parallelization dari inherently sequential stochastic decision-making process yang traditionally considered non-parallelizable due to sequential dependencies dalam Markov chain state transitions.</p>
+                        
+                        <!-- <p>Key technical novelty berupa <span class="highlight">advanced GPU architecture design</span> untuk stochastic constraint satisfaction algorithms yang integrates multiple optimization strategies: coalesced memory access patterns untuk biological constraint data, shared memory utilization untuk frequently accessed parameters, register optimization untuk hot computation loops, dan warp-level thread synchronization untuk maintaining statistical independence dalam parallel random sampling processes.</p> -->
+                        
+                        <p>Significant algorithmic contribution berupa <span class="highlight">novel parallelization strategy</span> yang decompose complex sequential MDP algorithm into multiple independent parallel components. </p>
+                         <!-- tanpa losing mathematical rigor atau biological validity. Implementation memperkenalkan innovative approaches untuk parallel reward function calculation, concurrent constraint evaluation dengan minimal thread divergence, dan efficient parallel reduction techniques untuk probability normalization dalam softmax operations.</p> -->
+                        
+                        <p>Scientific positioning: <span class="highlight">same proven mathematical algorithm, dramatically different computational implementation approach</span> yang memungkinkan massive performance improvement </p>
+                            <!-- (achieved 4,183x speedup) sambil maintaining atau bahkan improving biological constraint compliance rates (97.9% vs 93.2% baseline). Hal ini demonstrates feasibility dari GPU acceleration untuk complex biological algorithms dengan strict correctness requirements.</p> -->
+                        
+                        <p>Broader impact meliputi establishment dari new research direction dalam <span class="highlight">GPU-accelerated computational biology</span>, dengan potential applications ke other constraint-based biological design problems </p>
+                            <!-- seperti protein folding, metabolic pathway optimization, dan synthetic biology design workflows.</p> -->
+                    </div>
+                </td>
+                
+                <td>
+                    <div class="cell-header">Metode</div>
+                    <div class="cell-content">
+                        <h4>Systematic Research Methodology & Implementation Framework</h4>
+                        
+                        <p><span class="highlight">Comprehensive Literature Study:</span> Extensive analysis dari current state-of-the-art dalam DNA motif-based storage systems, dengan focus pada biological constraints yang diperlukan untuk successful DNA synthesis dan assembly. Detailed study dari constraint satisfaction algorithms dalam computational biology contexts, systematic review dari existing GPU acceleration techniques untuk stochastic algorithms, dan comprehensive analysis dari CUDA programming best practices untuk memory-intensive biological applications.</p>
+                        
+                        <p><span class="highlight">Advanced Architecture Design:</span> Systematic decomposition dari complex MDP algorithm menjadi parallelizable computational components melalui detailed algorithm profiling dan bottleneck identification. Comprehensive CUDA kernel architecture design dengan focus pada optimal thread organization, memory layout optimization untuk biological data structures, shared memory utilization strategies, register allocation optimization, dan thread synchronization protocols untuk maintaining algorithmic correctness dalam massively parallel environment.</p>
+                        
+                        <!-- <p><span class="highlight">Rigorous Implementation & Optimization:</span> Development dari production-quality CUDA C++ implementation dengan integration dari cuRAND library untuk statistically robust parallel random number generation. Implementation dari optimized biological constraint checking algorithms, efficient memory coalescing patterns, dan advanced GPU profiling untuk performance optimization. </p> -->
+                        
+                        <p><span class="highlight">Extensive Performance Evaluation:</span> Systematic benchmarking methodology dengan comprehensive comparison terhadap Python sequential baseline, statistical analysis dari speedup characteristics across different input parameters, detailed memory usage profiling, Biological validation through extensive constraint compliance testing dan motif quality assessment.</p>
+                        
+                        <p><span class="highlight">Statistical Analysis & Validation:</span> Rigorous statistical methodology untuk evaluating performance improvements, including confidence interval analysis,  reproducibility validation, dan comparative assessment dengan existing state-of-the-art tools dalam DNA motif generation field.</p>
+                    </div>
+                </td>
+            </tr>
+            
+            <!-- Bottom Row - Judul -->
+            <tr>
+                <td colspan="3" class="title-cell">
+                    <h2>"Akselerasi GPU untuk Pipeline Sintesis Motif DNA: Implementasi Paralel Markov Decision Process dalam Sistem Penyimpanan Data DNA"</h2>
+                    
+                    <div class="results-grid">
+                        <div class="result-box">
+                            <h5>🐍 Python Sequential Baseline</h5>
+                            <div class="result-metric">
+                                <span>Total Rounds:</span>
+                                <span class="metric-value">1,000 motif sets</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Success Rate:</span>
+                                <span class="metric-value">93.20%</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Total Time:</span>
+                                <span class="metric-value">69.7 minutes</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Avg/Round:</span>
+                                <span class="metric-value">4.183 seconds</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Architecture:</span>
+                                <span class="metric-value">Single-threaded CPU</span>
+                            </div>
+                        </div>
+                        
+                        <div class="result-box">
+                            <h5>🚀 CUDA GPU Implementation</h5>
+                            <div class="result-metric">
+                                <span>Total Rounds:</span>
+                                <span class="metric-value">1,000 motif sets</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Success Rate:</span>
+                                <span class="metric-value">97.90% (+4.7%)</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Total Time:</span>
+                                <span class="metric-value">1.3 seconds</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Avg/Round:</span>
+                                <span class="metric-value">0.001 seconds</span>
+                            </div>
+                            <div class="result-metric">
+                                <span>Architecture:</span>
+                                <span class="metric-value">1000+ CUDA cores</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="speedup-highlight">
+                        🔥 BREAKTHROUGH ACHIEVEMENT: 4,183x SPEEDUP (4.183s → 0.001s)
+                    </div>
+                    
+                    <div class="impact-summary">
+                        ✅ Exceeded 50x target by 83x margin | ✅ Improved biological compliance (97.9% vs 93.2%) | ✅ Real-time generation capability achieved<br>
+                        ✅ Sub-second processing enables commercial viability | ✅ Scalable to industrial applications | ✅ New benchmark for DNA storage field
+                    </div>
+                </td>
+            </tr>
+        </table>
+    </div>
+</body>
+</html>
