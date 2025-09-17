@@ -52,7 +52,7 @@ struct Hyperparameters {
 
 __constant__ int nucleotide_complement[4] = {1, 0, 3, 2}; // A<->T, C<->G
 
-// ======================= Device Helpers =======================
+// ======================= Device Helpers ======================= -> GPU Only Exec
 
 __device__ inline bool is_gc(unsigned char b) { return (b == 2 /*C*/ || b == 3 /*G*/); }
 
@@ -213,7 +213,7 @@ __device__ int sample_nucleotide(float* p, curandState* state) {
     return 3;
 }
 
-// ======================= Kernels =======================
+// ======================= Kernels ======================= -> CPU+GPU Exec, Can call device-only kernel, but also can take data from CPU Memory
 
 __global__ void key_generation_kernel(
     unsigned char* keys,
